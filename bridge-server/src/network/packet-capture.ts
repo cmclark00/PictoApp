@@ -32,21 +32,26 @@ export class PacketCapture extends EventEmitter {
 
     console.log(`Starting packet capture on ${this.interface}, channel ${this.channel}`);
 
-    // NOTE: Actual packet capture requires native libpcap bindings
-    // This would use the 'cap' npm package: https://www.npmjs.com/package/cap
-    // Installation: npm install cap (requires libpcap-dev)
-
-    // For now, emit a warning that hardware setup is needed
-    console.warn('WARNING: Packet capture requires:');
-    console.warn('1. Install libpcap-dev: sudo apt-get install libpcap-dev');
-    console.warn('2. Install cap package: npm install cap');
-    console.warn('3. Run with sudo for monitor mode access');
-    console.warn('4. WiFi adapter with monitor mode support (e.g., Prism54 chipset)');
-
     this.isCapturing = true;
 
-    // Emit mock packets for testing (remove when implementing real capture)
-    this.startMockCapture();
+    // Try to use real packet capture, fall back to mock mode
+    try {
+      const Cap = require('cap');
+      await this.startRealCapture();
+      console.log('✓ Real packet capture enabled - monitoring DS traffic');
+    } catch (error: any) {
+      console.warn('⚠ Could not enable real packet capture:', error.message);
+      console.warn('');
+      console.warn('To enable real DS communication:');
+      console.warn('1. Install libpcap-dev: sudo apt-get install libpcap-dev');
+      console.warn('2. Install cap package: npm install cap');
+      console.warn('3. Run with sudo for monitor mode access');
+      console.warn('4. WiFi adapter with monitor mode support (e.g., Prism54 chipset)');
+      console.warn('');
+      console.warn('Falling back to MOCK MODE for testing');
+      console.warn('');
+      this.startMockCapture();
+    }
   }
 
   /**
@@ -108,20 +113,28 @@ export class PacketCapture extends EventEmitter {
 
   /**
    * Real packet capture implementation (requires 'cap' package)
-   * Uncomment and use when libpcap-dev and cap are installed
    */
-  /*
   private async startRealCapture(): Promise<void> {
     const Cap = require('cap').Cap;
     const decoders = require('cap').decoders;
 
     const c = new Cap();
     const device = Cap.findDevice(this.interface);
+
+    if (!device) {
+      throw new Error(`Network interface ${this.interface} not found`);
+    }
+
+    // Filter for Nintendo DS packets (MAC prefix 00:09:bf or broadcast)
     const filter = `ether dst ${DS_CONSTANTS.BROADCAST_MAC} or ether[0:3] = 0x0009bf`;
     const bufSize = 10 * 1024 * 1024;
     const buffer = Buffer.alloc(65535);
 
+    console.log(`Opening ${device} with filter: ${filter}`);
     const linkType = c.open(device, filter, bufSize, buffer);
+    console.log(`Link type: ${linkType}`);
+
+    let packetCount = 0;
 
     c.on('packet', (nbytes: number, trunc: boolean) => {
       if (trunc) {
@@ -129,22 +142,34 @@ export class PacketCapture extends EventEmitter {
         return;
       }
 
-      // Parse 802.11 packet
-      const ret = decoders.Ethernet(buffer);
+      try {
+        // Parse 802.11 packet
+        const ret = decoders.Ethernet(buffer);
 
-      const packet: DSPacket = {
-        timestamp: Date.now(),
-        sourceMAC: ret.info.srcmac,
-        destMAC: ret.info.dstmac,
-        channel: this.channel,
-        data: buffer.slice(ret.offset, nbytes),
-        packetType: 'data',
-      };
+        const packet: DSPacket = {
+          timestamp: Date.now(),
+          sourceMAC: ret.info.srcmac,
+          destMAC: ret.info.dstmac,
+          channel: this.channel,
+          data: buffer.slice(ret.offset, nbytes),
+          packetType: 'data',
+        };
 
-      this.emit('packet', packet);
+        packetCount++;
+        if (packetCount % 100 === 0) {
+          console.log(`✓ Captured ${packetCount} packets from DS devices`);
+        }
+
+        this.emit('packet', packet);
+      } catch (error) {
+        console.error('Error parsing packet:', error);
+      }
+    });
+
+    c.on('error', (error: Error) => {
+      console.error('Capture error:', error);
     });
   }
-  */
 }
 
 /**
